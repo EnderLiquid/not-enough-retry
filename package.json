@@ -1,0 +1,42 @@
+{
+  "name": "not-enough-retry",
+  "version": "0.1.0",
+  "description": "Retry hints and capped-backoff mixin that let pi's built-in retry catch every non-permanent provider error.",
+  "type": "module",
+  "license": "MIT",
+  "author": "EnderLiquid",
+  "keywords": [
+    "pi-package",
+    "pi-extension",
+    "pi-coding-agent",
+    "retry",
+    "provider-error",
+    "backoff"
+  ],
+  "files": [
+    "extensions"
+  ],
+  "exports": {
+    ".": "./extensions/not-enough-retry.ts"
+  },
+  "pi": {
+    "extensions": [
+      "./extensions/not-enough-retry.ts"
+    ]
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": ">=0.84.0"
+  },
+  "scripts": {
+    "test": "tsx --test tests/*.test.ts",
+    "test:types": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "@earendil-works/pi-agent-core": "^0.84.1",
+    "@earendil-works/pi-ai": "^0.84.1",
+    "@earendil-works/pi-coding-agent": "0.84.1",
+    "@types/node": "^24.10.0",
+    "tsx": "^4.23.10",
+    "typescript": "^5.9.3"
+  }
+}
