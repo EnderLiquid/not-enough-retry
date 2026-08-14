@@ -134,6 +134,44 @@ test("message_end 处理器：未知错误追加 hint，返回替换消息", asy
   assert.equal(event.message.errorMessage, "上游模型响应错误");
 });
 
+test("session_start：配置损坏时通知并回退默认", async () => {
+  const tmp = mkdtempSync(join(tmpdir(), "ner-notify-"));
+  const piDir = join(tmp, ".pi");
+  mkdirSync(piDir, { recursive: true });
+  writeFileSync(join(piDir, "settings.json"), "{ not json");
+
+  const originalCwd = process.cwd();
+  try {
+    process.chdir(tmp);
+    const { default: notEnoughRetry } = await import("../extensions/not-enough-retry.ts");
+    const { handlers, api } = createFakePi();
+    notEnoughRetry(api as unknown as ExtensionAPI);
+
+    const notifications: Array<{ message: string; level: string }> = [];
+    const ctx = {
+      cwd: tmp,
+      hasUI: true,
+      ui: { notify: (message: string, level: string) => notifications.push({ message, level }) },
+    };
+    const handler = handlers.get("session_start")![0]!;
+
+    await handler({}, ctx);
+    assert.equal(notifications.length, 1);
+    assert.equal(notifications[0].level, "warning");
+    assert.ok(notifications[0].message.includes("failed to parse"));
+
+    // 修复配置后不再通知
+    writeFileSync(
+      join(piDir, "settings.json"),
+      JSON.stringify({ "not-enough-retry": { mixin: { maxRetries: 3 } } }),
+    );
+    await handler({}, ctx);
+    assert.equal(notifications.length, 1);
+  } finally {
+    process.chdir(originalCwd);
+  }
+});
+
 test("mixin 补丁：CLI flag 应急关闭时交还原生实现", async () => {
   const { default: notEnoughRetry } = await import("../extensions/not-enough-retry.ts");
   const { flags, api } = createFakePi();

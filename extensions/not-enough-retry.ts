@@ -21,6 +21,17 @@ import { installPrepareRetryMixin } from "./shared/mixin.ts";
 
 type AssistantError = Extract<AgentMessage, { role: "assistant" }>;
 
+/** 读取配置；失败时回退默认值并调用 notify（无 UI 场景可传空操作）。 */
+function reloadMixinConfig(cwd: string, notify: (message: string) => void): MixinConfig {
+  try {
+    return loadMixinConfig(cwd);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    notify(`not-enough-retry config issue: ${message}`);
+    return DEFAULT_MIXIN_CONFIG;
+  }
+}
+
 export default function notEnoughRetry(pi: ExtensionAPI) {
   pi.registerFlag(NO_MIXIN_FLAG, {
     description:
@@ -29,7 +40,8 @@ export default function notEnoughRetry(pi: ExtensionAPI) {
   });
 
   // 工厂执行时进程 cwd 通常已是项目目录；session_start 后以会话 cwd 为准刷新。
-  let mixinConfig: MixinConfig = loadMixinConfig(process.cwd());
+  // 首读无 UI 上下文，失败静默回退；session_start 读到时再通知。
+  let mixinConfig: MixinConfig = reloadMixinConfig(process.cwd(), () => {});
 
   installPrepareRetryMixin(() => {
     if (pi.getFlag(NO_MIXIN_FLAG)) {
@@ -39,7 +51,9 @@ export default function notEnoughRetry(pi: ExtensionAPI) {
   });
 
   pi.on("session_start", (_event, ctx) => {
-    mixinConfig = loadMixinConfig(ctx.cwd);
+    mixinConfig = reloadMixinConfig(ctx.cwd, (message) => {
+      if (ctx.hasUI) ctx.ui.notify(message, "warning");
+    });
   });
 
   pi.on("message_end", (event, ctx) => {

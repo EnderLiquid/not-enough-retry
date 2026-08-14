@@ -42,35 +42,37 @@ function isNonNegativeFinite(value: unknown): value is number {
 
 export function sanitizeMixinConfig(raw: Partial<MixinConfig>): MixinConfig {
   const merged = { ...DEFAULT_MIXIN_CONFIG, ...raw };
+  const numeric = (key: "maxRetries" | "baseDelayMs" | "maxDelayMs"): number => {
+    const value = merged[key];
+    if (isNonNegativeFinite(value)) return Math.trunc(value);
+    throw new Error(`not-enough-retry.mixin.${key} should be a non-negative number`);
+  };
   return {
     enabled: merged.enabled !== false,
-    maxRetries: isNonNegativeFinite(merged.maxRetries)
-      ? Math.trunc(merged.maxRetries)
-      : DEFAULT_MIXIN_CONFIG.maxRetries,
-    baseDelayMs: isNonNegativeFinite(merged.baseDelayMs)
-      ? Math.trunc(merged.baseDelayMs)
-      : DEFAULT_MIXIN_CONFIG.baseDelayMs,
-    maxDelayMs: isNonNegativeFinite(merged.maxDelayMs)
-      ? Math.trunc(merged.maxDelayMs)
-      : DEFAULT_MIXIN_CONFIG.maxDelayMs,
+    maxRetries: numeric("maxRetries"),
+    baseDelayMs: numeric("baseDelayMs"),
+    maxDelayMs: numeric("maxDelayMs"),
   };
 }
 
 /**
  * 读取 pi settings 中 "not-enough-retry.mixin" 段（全局与项目级浅合并）。
- * 解析失败时返回默认值，保证 mixin 可用性优先。
+ * 配置损坏或字段非法时直接抛出，由调用方捕获后回退默认并通知。
  */
 export function loadMixinConfig(cwd: string): MixinConfig {
-  try {
-    const manager = SettingsManager.create(cwd, getAgentDir(), { projectTrusted: true });
-    const globalSection = asMixinSection(
-      (manager.getGlobalSettings() as Record<string, unknown>)["not-enough-retry"],
+  const manager = SettingsManager.create(cwd, getAgentDir(), { projectTrusted: true });
+  const settingsErrors = manager.drainErrors();
+  if (settingsErrors.length > 0) {
+    const first = settingsErrors[0];
+    throw new Error(
+      `${first.scope === "global" ? "global" : "project"} settings.json failed to parse: ${first.error.message}`,
     );
-    const projectSection = asMixinSection(
-      (manager.getProjectSettings() as Record<string, unknown>)["not-enough-retry"],
-    );
-    return sanitizeMixinConfig({ ...globalSection.mixin, ...projectSection.mixin });
-  } catch {
-    return DEFAULT_MIXIN_CONFIG;
   }
+  const globalSection = asMixinSection(
+    (manager.getGlobalSettings() as Record<string, unknown>)["not-enough-retry"],
+  );
+  const projectSection = asMixinSection(
+    (manager.getProjectSettings() as Record<string, unknown>)["not-enough-retry"],
+  );
+  return sanitizeMixinConfig({ ...globalSection.mixin, ...projectSection.mixin });
 }

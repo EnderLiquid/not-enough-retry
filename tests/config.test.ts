@@ -16,13 +16,13 @@ test("sanitize：合法值原样保留，小数截断", () => {
   assert.equal(config.maxDelayMs, 60000);
 });
 
-test("sanitize：非法值回退默认", () => {
-  const config = sanitizeMixinConfig({
-    maxRetries: Number.NaN,
-    baseDelayMs: -1,
-    maxDelayMs: "fast" as unknown as number,
-  });
-  assert.deepEqual(config, DEFAULT_MIXIN_CONFIG);
+test("sanitize：非法值直接抛出", () => {
+  assert.throws(() => sanitizeMixinConfig({ maxRetries: Number.NaN }), /non-negative/);
+  assert.throws(() => sanitizeMixinConfig({ baseDelayMs: -1 }), /non-negative/);
+  assert.throws(
+    () => sanitizeMixinConfig({ maxDelayMs: "fast" as unknown as number }),
+    /non-negative/,
+  );
 });
 
 test("sanitize：部分缺失时按字段回退", () => {
@@ -54,10 +54,23 @@ test("loadMixinConfig：读取项目级 not-enough-retry.mixin 段", () => {
   assert.equal(config.maxDelayMs, DEFAULT_MIXIN_CONFIG.maxDelayMs);
 });
 
-test("loadMixinConfig：settings 损坏时回退默认", () => {
+test("loadMixinConfig：settings 损坏时抛出", () => {
   const tmp = mkdtempSync(join(tmpdir(), "ner-config-"));
   const piDir = join(tmp, ".pi");
   mkdirSync(piDir, { recursive: true });
   writeFileSync(join(piDir, "settings.json"), "{ not json");
-  assert.deepEqual(loadMixinConfig(tmp), DEFAULT_MIXIN_CONFIG);
+  assert.throws(() => loadMixinConfig(tmp), /failed to parse/);
+});
+
+test("loadMixinConfig：非法字段值抛出", () => {
+  const tmp = mkdtempSync(join(tmpdir(), "ner-config-"));
+  const piDir = join(tmp, ".pi");
+  mkdirSync(piDir, { recursive: true });
+  writeFileSync(
+    join(piDir, "settings.json"),
+    JSON.stringify({
+      "not-enough-retry": { mixin: { maxRetries: "many" } },
+    }),
+  );
+  assert.throws(() => loadMixinConfig(tmp), /non-negative/);
 });
