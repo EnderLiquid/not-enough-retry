@@ -20,7 +20,7 @@
  * 因此这里的 prototype 补丁作用的就是宿主正在使用的类。
  */
 import { AgentSession } from "@earendil-works/pi-coding-agent";
-import { type MixinConfig } from "./config.ts";
+import { DEFAULT_MIXIN_CONFIG, type MixinConfig } from "./config.ts";
 
 /** 与原方法交互所需的内部成员（无真私有，运行时按需检查存在性）。 */
 type PrepareRetryHost = {
@@ -58,11 +58,18 @@ export function calculateRetryDelayMs(attempt: number, config: MixinConfig): num
   return Math.min(raw, config.maxDelayMs);
 }
 
+/** 模块级配置源：/reload 重执行工厂时更新，避免向原型叠加多层补丁。 */
+let configProvider: (() => MixinConfig) | undefined;
+let mixinInstalled = false;
+
 export function installPrepareRetryMixin(getConfig: () => MixinConfig): void {
+  configProvider = getConfig;
+  if (mixinInstalled) return;
+  mixinInstalled = true;
   (
     AgentSession.prototype as unknown as Record<"_prepareRetry", PrepareRetrySignature>
   )._prepareRetry = async function (this: PrepareRetryHost, message) {
-    const config = getConfig();
+    const config = configProvider?.() ?? DEFAULT_MIXIN_CONFIG;
     if (!config.enabled) {
       return originalPrepareRetry.call(this, message);
     }
