@@ -12,7 +12,7 @@ import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
-import { AgentSession } from "@earendil-works/pi-coding-agent";
+import { AgentSession, type ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { NO_MIXIN_FLAG } from "../extensions/shared/config.ts";
 
 type Handler = (event: any, ctx: any) => any;
@@ -78,7 +78,7 @@ test("mixin 补丁：退避封顶、摘除 error、次数上限、事件形状",
     process.chdir(tmp);
     const { default: notEnoughRetry } = await import("../extensions/not-enough-retry.ts");
     const { api } = createFakePi();
-    notEnoughRetry(api as never);
+    notEnoughRetry(api as unknown as ExtensionAPI);
 
     const prepareRetry = (
       AgentSession.prototype as unknown as Record<"_prepareRetry", (message: unknown) => Promise<boolean>>
@@ -112,7 +112,7 @@ test("mixin 补丁：退避封顶、摘除 error、次数上限、事件形状",
 test("message_end 处理器：未知错误追加 hint，返回替换消息", async () => {
   const { default: notEnoughRetry } = await import("../extensions/not-enough-retry.ts");
   const { handlers, api } = createFakePi();
-  notEnoughRetry(api as never);
+  notEnoughRetry(api as unknown as ExtensionAPI);
 
   const handler = handlers.get("message_end")![0]!;
   const ctx = {
@@ -138,7 +138,7 @@ test("mixin 补丁：CLI flag 应急关闭时交还原生实现", async () => {
   const { default: notEnoughRetry } = await import("../extensions/not-enough-retry.ts");
   const { flags, api } = createFakePi();
   flags.set(NO_MIXIN_FLAG, true);
-  notEnoughRetry(api as never);
+  notEnoughRetry(api as unknown as ExtensionAPI);
 
   const prepareRetry = (
     AgentSession.prototype as unknown as Record<"_prepareRetry", (message: unknown) => Promise<boolean>>
