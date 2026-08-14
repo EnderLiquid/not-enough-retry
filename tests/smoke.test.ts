@@ -172,6 +172,22 @@ test("session_start：配置损坏时通知并回退默认", async () => {
   }
 });
 
+test("重复执行工厂不叠加补丁层（模拟 reload 后重新注册）", async () => {
+  const { default: notEnoughRetry } = await import("../extensions/not-enough-retry.ts");
+  const proto = AgentSession.prototype as unknown as Record<
+    "_prepareRetry",
+    (message: unknown) => Promise<boolean>
+  >;
+
+  const { api: api1 } = createFakePi();
+  notEnoughRetry(api1 as unknown as ExtensionAPI);
+  const afterFirst = proto._prepareRetry;
+
+  const { api: api2 } = createFakePi();
+  notEnoughRetry(api2 as unknown as ExtensionAPI);
+  assert.equal(proto._prepareRetry, afterFirst);
+});
+
 test("mixin 补丁：CLI flag 应急关闭时交还原生实现", async () => {
   const { default: notEnoughRetry } = await import("../extensions/not-enough-retry.ts");
   const { flags, api } = createFakePi();

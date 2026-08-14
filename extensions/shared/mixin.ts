@@ -33,9 +33,18 @@ type PrepareRetryHost = {
 
 type PrepareRetrySignature = (this: PrepareRetryHost, message: unknown) => Promise<boolean>;
 
-const originalPrepareRetry = (
-  AgentSession.prototype as unknown as Record<"_prepareRetry", PrepareRetrySignature>
-)._prepareRetry;
+/**
+ * 跨模块实例共享的标记（Symbol.for 全局注册表）：/reload 与会话切换会
+ * 清缓存重新 import 模块，新模块实例靠标记识别原型上已有的补丁，只更新
+ * 配置源而不叠加层。配置源存函数自身属性上，避免 stale 闭包指向旧工厂。
+ */
+const MIXIN_MARKER = Symbol.for("not-enough-retry.mixin-installed");
+const CONFIG_PROVIDER_KEY = Symbol.for("not-enough-retry.config-provider");
+
+type PatchedPrepareRetry = PrepareRetrySignature & {
+  [MIXIN_MARKER]?: boolean;
+  [CONFIG_PROVIDER_KEY]?: () => MixinConfig;
+};
 
 /** 可中止睡眠，等价 pi 自带 dist/utils/sleep.js 的行为。 */
 function abortableSleep(ms: number, signal?: AbortSignal): Promise<void> {
@@ -58,18 +67,20 @@ export function calculateRetryDelayMs(attempt: number, config: MixinConfig): num
   return Math.min(raw, config.maxDelayMs);
 }
 
-/** 模块级配置源：/reload 重执行工厂时更新，避免向原型叠加多层补丁。 */
-let configProvider: (() => MixinConfig) | undefined;
-let mixinInstalled = false;
-
 export function installPrepareRetryMixin(getConfig: () => MixinConfig): void {
-  configProvider = getConfig;
-  if (mixinInstalled) return;
-  mixinInstalled = true;
-  (
-    AgentSession.prototype as unknown as Record<"_prepareRetry", PrepareRetrySignature>
-  )._prepareRetry = async function (this: PrepareRetryHost, message) {
-    const config = configProvider?.() ?? DEFAULT_MIXIN_CONFIG;
+  const proto = AgentSession.prototype as unknown as Record<"_prepareRetry", PatchedPrepareRetry>;
+  const current = proto._prepareRetry;
+  if (typeof current === "function" && current[MIXIN_MARKER]) {
+    // reload / 会话切换后模块重新执行：补丁仍在原型上，仅更新配置来源。
+    current[CONFIG_PROVIDER_KEY] = getConfig;
+    return;
+  }
+
+  // 此处原型上必是 pi 原生实现（标记已挡掉本插件旧层），保存为降级路径。
+  const originalPrepareRetry = current;
+
+  const patched = async function (this: PrepareRetryHost, message: unknown): Promise<boolean> {
+    const config = patched[CONFIG_PROVIDER_KEY]?.() ?? DEFAULT_MIXIN_CONFIG;
     if (!config.enabled) {
       return originalPrepareRetry.call(this, message);
     }
@@ -128,5 +139,9 @@ export function installPrepareRetryMixin(getConfig: () => MixinConfig): void {
       this._retryAbortController = undefined;
     }
     return true;
-  };
+  } as PatchedPrepareRetry;
+
+  patched[MIXIN_MARKER] = true;
+  patched[CONFIG_PROVIDER_KEY] = getConfig;
+  proto._prepareRetry = patched;
 }
