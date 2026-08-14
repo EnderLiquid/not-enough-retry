@@ -66,5 +66,5 @@ export function decideHint(message: AgentMessage, contextWindow?: number): HintD
 
 /** 生成追加 hint 后的错误文本。text 可为空串（无详情错误）。 */
 export function appendHint(text: string): string {
-  return `${text}\n\n${EXTENSION_TAG} ${RETRYABLE_HINT}; treating provider error as retryable.`;
+  return `${EXTENSION_TAG} ${RETRYABLE_HINT}: ${text}`;
 }

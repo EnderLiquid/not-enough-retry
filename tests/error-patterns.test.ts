@@ -73,7 +73,7 @@ test("已知取舍：语序/连字符变体不命中黑名单，代价仅是无�
 });
 
 test("已含本扩展标记的错误不重复追加", () => {
-  const text = `some error\n\n${EXTENSION_TAG} provider returned error`;
+  const text = `${EXTENSION_TAG} provider returned error: some error`;
   assert.deepEqual(decideHint(assistantError(text)), {
     append: false,
     reason: "already-hinted",
@@ -123,7 +123,7 @@ test("appendHint 输出包含标记与内置关键词", () => {
   const result = appendHint("channel error");
   assert.ok(result.includes(EXTENSION_TAG));
   assert.ok(result.includes("provider returned error"));
-  assert.ok(result.startsWith("channel error"));
+  assert.ok(result.endsWith("channel error"));
 });
 
 test("appendHint 空文本可用（无详情错误）", () => {
