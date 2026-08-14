@@ -36,19 +36,21 @@ function asMixinSection(value: unknown): MixinSection {
   return {};
 }
 
-function sanitizeMixinConfig(raw: Partial<MixinConfig>): MixinConfig {
+function isNonNegativeFinite(value: unknown): value is number {
+  return typeof value === "number" && Number.isFinite(value) && value >= 0;
+}
+
+export function sanitizeMixinConfig(raw: Partial<MixinConfig>): MixinConfig {
   const merged = { ...DEFAULT_MIXIN_CONFIG, ...raw };
-  const finite = (value: unknown): value is number =>
-    typeof value === "number" && Number.isFinite(value) && value >= 0;
   return {
     enabled: merged.enabled !== false,
-    maxRetries: finite(merged.maxRetries)
+    maxRetries: isNonNegativeFinite(merged.maxRetries)
       ? Math.trunc(merged.maxRetries)
       : DEFAULT_MIXIN_CONFIG.maxRetries,
-    baseDelayMs: finite(merged.baseDelayMs)
+    baseDelayMs: isNonNegativeFinite(merged.baseDelayMs)
       ? Math.trunc(merged.baseDelayMs)
       : DEFAULT_MIXIN_CONFIG.baseDelayMs,
-    maxDelayMs: finite(merged.maxDelayMs)
+    maxDelayMs: isNonNegativeFinite(merged.maxDelayMs)
       ? Math.trunc(merged.maxDelayMs)
       : DEFAULT_MIXIN_CONFIG.maxDelayMs,
   };
