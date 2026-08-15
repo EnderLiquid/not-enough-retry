@@ -5,6 +5,14 @@
   "type": "module",
   "license": "MIT",
   "author": "EnderLiquid",
+  "homepage": "https://github.com/EnderLiquid/not-enough-retry#readme",
+  "bugs": {
+    "url": "https://github.com/EnderLiquid/not-enough-retry/issues"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/EnderLiquid/not-enough-retry.git"
+  },
   "keywords": [
     "pi-package",
     "pi-extension",
