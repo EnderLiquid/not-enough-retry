@@ -1,7 +1,7 @@
 {
   "name": "not-enough-retry",
   "version": "0.1.0",
-  "description": "Retry hints and capped-backoff mixin that let pi's built-in retry catch every non-permanent provider error.",
+  "description": "Make Pi's built-in retry catch every non-permanent provider error.",
   "type": "module",
   "license": "MIT",
   "author": "EnderLiquid",
