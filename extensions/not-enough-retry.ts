@@ -8,10 +8,6 @@
  * 2. 可选 mixin：给 _prepareRetry 加退避封顶与独立次数上限（见 shared/mixin.ts）。
  *    开关与参数在 pi settings.json 的 "not-enough-retry.mixin" 段，
  *    启动 flag --ner-no-mixin 可应急禁用。
- *
- * 建议配合 pi 配置（mixin 关闭时的兜底）：
- *   { "retry": { "maxRetries": 16, "baseDelayMs": 0 } }
- * 0ms 无退避，串行节奏由请求耗时决定；16 次耗尽即终止。
  */
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import { type ExtensionAPI } from "@earendil-works/pi-coding-agent";
