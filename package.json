@@ -14,7 +14,9 @@
     "backoff"
   ],
   "files": [
-    "extensions"
+    "extensions",
+    "README.md",
+    "LICENSE"
   ],
   "exports": {
     ".": "./extensions/not-enough-retry.ts"
