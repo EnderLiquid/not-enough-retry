@@ -116,6 +116,7 @@ test("message_end 处理器：未知错误追加 hint，返回替换消息", asy
 
   const handler = handlers.get("message_end")![0]!;
   const ctx = {
+    signal: undefined,
     getContextUsage: () => undefined,
   };
   const event = {
@@ -132,6 +133,33 @@ test("message_end 处理器：未知错误追加 hint，返回替换消息", asy
   assert.ok(result.message.errorMessage.includes("provider returned error"));
   // 原消息对象未被原地修改（扩展替换语义：返回新对象）
   assert.equal(event.message.errorMessage, "上游模型响应错误");
+});
+
+test("message_end 处理器：active signal 已取消时不追加 hint", async () => {
+  const { default: notEnoughRetry } = await import("../extensions/not-enough-retry.ts");
+  const { handlers, api } = createFakePi();
+  notEnoughRetry(api as unknown as ExtensionAPI);
+
+  const handler = handlers.get("message_end")![0]!;
+  const controller = new AbortController();
+  controller.abort();
+  const event = {
+    message: {
+      role: "assistant",
+      content: [],
+      stopReason: "error",
+      errorMessage: "an unknown local cancellation failure",
+      timestamp: Date.now(),
+    },
+  };
+
+  const result = await handler(event, {
+    signal: controller.signal,
+    getContextUsage: () => undefined,
+  });
+
+  assert.equal(result, undefined);
+  assert.equal(event.message.errorMessage, "an unknown local cancellation failure");
 });
 
 test("session_start：配置损坏时通知并回退默认", async () => {

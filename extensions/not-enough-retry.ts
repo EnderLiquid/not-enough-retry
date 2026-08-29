@@ -53,7 +53,7 @@ export default function notEnoughRetry(pi: ExtensionAPI) {
   });
 
   pi.on("message_end", (event, ctx) => {
-    const decision = decideHint(event.message, ctx.getContextUsage()?.contextWindow);
+    const decision = decideHint(event.message, ctx.getContextUsage()?.contextWindow, ctx.signal);
     if (!decision.append) return;
 
     const message = event.message as AssistantError;

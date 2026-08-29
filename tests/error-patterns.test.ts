@@ -4,11 +4,16 @@ import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import {
   appendHint,
   decideHint,
+  DEFAULT_ABORT_MESSAGE,
   EXTENSION_TAG,
+  isDefaultAbortMessage,
   NON_RETRYABLE_PATTERNS,
 } from "../extensions/shared/error-patterns.ts";
 
-function assistantError(errorMessage: string | undefined): AgentMessage {
+function assistantError(
+  errorMessage: string | undefined,
+  stopReason: "error" | "aborted" = "error",
+): AgentMessage {
   return {
     role: "assistant",
     content: [],
@@ -16,7 +21,7 @@ function assistantError(errorMessage: string | undefined): AgentMessage {
     provider: "openai",
     model: "gpt-test",
     usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } },
-    stopReason: "error",
+    stopReason,
     errorMessage,
     timestamp: Date.now(),
   } as AgentMessage;
@@ -45,6 +50,43 @@ test("黑名单：模型不存在类错误不追加 hint", () => {
   ]) {
     const decision = decideHint(assistantError(text));
     assert.deepEqual(decision, { append: false, reason: "blacklist" });
+  }
+});
+
+test("AbortSignal 默认 message 不追加 hint", () => {
+  for (const text of [
+    DEFAULT_ABORT_MESSAGE,
+    `AbortError: ${DEFAULT_ABORT_MESSAGE}`,
+    `MCP error -32001: AbortError: ${DEFAULT_ABORT_MESSAGE}`,
+  ]) {
+    assert.deepEqual(decideHint(assistantError(text)), {
+      append: false,
+      reason: "aborted",
+    });
+  }
+});
+
+test("结构化 aborted stop reason 不追加 hint", () => {
+  assert.deepEqual(decideHint(assistantError("ignored", "aborted")), {
+    append: false,
+    reason: "aborted",
+  });
+});
+
+test("active AbortSignal 已取消时不追加 hint", () => {
+  const controller = new AbortController();
+  controller.abort();
+
+  assert.deepEqual(decideHint(assistantError("unknown error"), undefined, controller.signal), {
+    append: false,
+    reason: "aborted",
+  });
+});
+
+test("自定义取消文案不命中默认 message fallback", () => {
+  for (const text of ["The operation was aborted", "Request aborted", "Request cancelled by user"]) {
+    assert.equal(isDefaultAbortMessage(text), false, text);
+    assert.deepEqual(decideHint(assistantError(text)), { append: true });
   }
 });
 
@@ -117,6 +159,11 @@ test("非 assistant / 非 error 消息不追加", () => {
   const stopped = assistantError("whatever") as AgentMessage & { stopReason: string };
   stopped.stopReason = "stop";
   assert.deepEqual(decideHint(stopped), { append: false, reason: "non-error" });
+
+  assert.deepEqual(decideHint(assistantError("whatever", "aborted")), {
+    append: false,
+    reason: "aborted",
+  });
 });
 
 test("appendHint 输出包含标记与内置关键词", () => {
