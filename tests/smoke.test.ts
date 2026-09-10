@@ -11,6 +11,9 @@ import { DEFAULT_MIXIN_CONFIG, NO_MIXIN_FLAG } from "../extensions/shared/config
 
 type Handler = (event: any, ctx: any) => any;
 
+const STALE_CONTEXT_ERROR =
+  "This extension ctx is stale after session replacement or reload.";
+
 function createFakePi(options: { staleGetFlag?: boolean } = {}) {
   const handlers = new Map<string, Handler[]>();
   const flags = new Map<string, unknown>();
@@ -244,6 +247,60 @@ test("message_end 处理器：active signal 已取消时不追加 hint", async (
 
   assert.equal(result, undefined);
   assert.equal(event.message.errorMessage, "an unknown local cancellation failure");
+});
+
+test("message_end 处理器：stale ctx 下未知错误仍追加 hint", async () => {
+  const { default: notEnoughRetry } = await import("../extensions/not-enough-retry.ts");
+  const { handlers, api } = createFakePi();
+  notEnoughRetry(api as unknown as ExtensionAPI);
+
+  const handler = handlers.get("message_end")![0]!;
+  const event = {
+    message: {
+      role: "assistant",
+      content: [],
+      stopReason: "error",
+      errorMessage: "unrecognized provider failure",
+      timestamp: Date.now(),
+    },
+  };
+  const staleCtx = {
+    getContextUsage: () => undefined,
+    get signal(): AbortSignal {
+      throw new Error(STALE_CONTEXT_ERROR);
+    },
+  };
+
+  const result = await handler(event, staleCtx);
+  assert.ok(result.message.errorMessage.includes("[not-enough-retry]"));
+  assert.equal(event.message.errorMessage, "unrecognized provider failure");
+});
+
+test("message_end 处理器：stale ctx 下 aborted 消息仍不追加 hint", async () => {
+  const { default: notEnoughRetry } = await import("../extensions/not-enough-retry.ts");
+  const { handlers, api } = createFakePi();
+  notEnoughRetry(api as unknown as ExtensionAPI);
+
+  const handler = handlers.get("message_end")![0]!;
+  const event = {
+    message: {
+      role: "assistant",
+      content: [],
+      stopReason: "aborted",
+      errorMessage: "request stopped",
+      timestamp: Date.now(),
+    },
+  };
+  const staleCtx = {
+    getContextUsage: () => {
+      throw new Error(STALE_CONTEXT_ERROR);
+    },
+    signal: undefined,
+  };
+
+  const result = await handler(event, staleCtx);
+  assert.equal(result, undefined);
+  assert.equal(event.message.errorMessage, "request stopped");
 });
 
 test("重复执行工厂不叠加同 revision 补丁层", async () => {

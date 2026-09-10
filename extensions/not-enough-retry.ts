@@ -27,7 +27,17 @@ export default function notEnoughRetry(pi: ExtensionAPI) {
   installPrepareRetryMixin();
 
   pi.on("message_end", (event, ctx) => {
-    const decision = decideHint(event.message, ctx.getContextUsage()?.contextWindow, ctx.signal);
+    // ctx 也带 staleness guard；读取失败时按缺少辅助信息继续判定。
+    let contextWindow: number | undefined;
+    let signal: AbortSignal | undefined;
+    try {
+      contextWindow = ctx.getContextUsage()?.contextWindow;
+      signal = ctx.signal;
+    } catch {
+      // 迟到的事件可能落在已经失效的 ctx 上。
+    }
+
+    const decision = decideHint(event.message, contextWindow, signal);
     if (!decision.append) return;
 
     const message = event.message as AssistantError;
