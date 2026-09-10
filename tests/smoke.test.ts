@@ -232,3 +232,86 @@ test("mixin 补丁：CLI flag 应急关闭时交还原生实现", async () => {
   assert.equal(events.length, 0);
   assert.equal(host._retryAttempt, 0);
 });
+
+/** 补丁函数上按 symbol 存放的协作槽位。 */
+type PatchedTarget = ((message: unknown) => Promise<boolean>) & { [key: symbol]: unknown };
+
+const CONFIG_PROVIDER_KEY = Symbol.for("not-enough-retry.config-provider");
+const STALE_ERROR =
+  "This extension ctx is stale after session replacement or reload. Do not use the previous ctx. Capture a new ctx in the current handler.";
+
+function writeMixinSettings(tmp: string, mixin: Record<string, number>) {
+  const piDir = join(tmp, ".pi");
+  mkdirSync(piDir, { recursive: true });
+  writeFileSync(join(piDir, "settings.json"), JSON.stringify({ "not-enough-retry": { mixin } }));
+}
+
+function getPatchedPrepareRetry(): PatchedTarget {
+  return (AgentSession.prototype as unknown as Record<"_prepareRetry", unknown>)
+    ._prepareRetry as PatchedTarget;
+}
+
+test("会话替换后重试仍工作：run 路径只读缓存，触不到 pi API", async () => {
+  const tmp = mkdtempSync(join(tmpdir(), "ner-stale-run-"));
+  writeMixinSettings(tmp, { maxRetries: 3, baseDelayMs: 0, maxDelayMs: 30000 });
+
+  const { default: notEnoughRetry } = await import("../extensions/not-enough-retry.ts");
+  const { handlers, api } = createFakePi();
+  notEnoughRetry(api as unknown as ExtensionAPI);
+  // session_start 是 flag 真值可见的最早时机，扩展在这里完成缓存。
+  await handlers.get("session_start")![0]!({ reason: "startup" }, { cwd: tmp, hasUI: false });
+
+  // 模拟会话替换 / reload 之后：旧实例的 pi API 全部进入失效状态。
+  api.getFlag = () => {
+    throw new Error(STALE_ERROR);
+  };
+
+  const prepareRetry = getPatchedPrepareRetry();
+  const { events, host } = createHost();
+  assert.equal(await prepareRetry.call(host, { errorMessage: "weird" }), true);
+  assert.equal(host._retryAttempt, 1);
+  assert.deepEqual(events[0], {
+    type: "auto_retry_start",
+    attempt: 1,
+    maxAttempts: 3,
+    delayMs: 0,
+    errorMessage: "weird",
+  });
+});
+
+test("配置源抛错时降级为上次成功的配置，异常不外泄到 run 路径", async () => {
+  const tmp = mkdtempSync(join(tmpdir(), "ner-last-good-"));
+  writeMixinSettings(tmp, { maxRetries: 2, baseDelayMs: 0, maxDelayMs: 30000 });
+
+  const { default: notEnoughRetry } = await import("../extensions/not-enough-retry.ts");
+  const { handlers, api } = createFakePi();
+  notEnoughRetry(api as unknown as ExtensionAPI);
+  await handlers.get("session_start")![0]!({ reason: "startup" }, { cwd: tmp, hasUI: false });
+
+  const patched = getPatchedPrepareRetry();
+  const workingProvider = patched[CONFIG_PROVIDER_KEY] as () => unknown;
+  const { events, host } = createHost();
+
+  // 第一次读取成功，配置进入 last-good 备份。
+  assert.equal(await patched.call(host, { errorMessage: "weird" }), true);
+
+  // 之后配置源失效（旧 ctx 被守卫挡下）：曲线与上限沿用 last-good。
+  patched[CONFIG_PROVIDER_KEY] = () => {
+    throw new Error(STALE_ERROR);
+  };
+  try {
+    assert.equal(await patched.call(host, { errorMessage: "weird" }), true);
+    assert.deepEqual(events[1], {
+      type: "auto_retry_start",
+      attempt: 2,
+      maxAttempts: 2,
+      delayMs: 0,
+      errorMessage: "weird",
+    });
+    // 第 3 次仍按 last-good 的 maxRetries=2 判定上限，返回 false 交还流程。
+    assert.equal(await patched.call(host, { errorMessage: "weird" }), false);
+    assert.equal(host._retryAttempt, 2);
+  } finally {
+    patched[CONFIG_PROVIDER_KEY] = workingProvider;
+  }
+});

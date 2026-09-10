@@ -14,6 +14,8 @@
  * - 补丁前保存原方法引用；
  * - 每次调用先做 sanity check，pi 升级导致内部字段变化时自动交还原生实现；
  * - 配置 enabled=false 或启动 flag --ner-no-mixin 时完全不介入。
+ * - 配置源读取失败（会话替换后扩展持有的 pi API 全部抛 stale 错误）时降级为上一次
+ *   成功的配置，异常留在本模块内，run 路径保持完整。
  *
  * 依赖事实：pi 扩展加载器（core/extensions/loader.js）通过 jiti alias /
  * virtualModules 把 @earendil-works/pi-coding-agent 强制解析到宿主自身模块，
@@ -41,9 +43,13 @@ type PrepareRetrySignature = (this: PrepareRetryHost, message: unknown) => Promi
 const MIXIN_MARKER = Symbol.for("not-enough-retry.mixin-installed");
 const CONFIG_PROVIDER_KEY = Symbol.for("not-enough-retry.config-provider");
 
+/** 上一次成功读到的配置，存在补丁函数上以跨模块实例存活。 */
+const LAST_GOOD_CONFIG_KEY = Symbol.for("not-enough-retry.last-good-config");
+
 type PatchedPrepareRetry = PrepareRetrySignature & {
   [MIXIN_MARKER]?: boolean;
   [CONFIG_PROVIDER_KEY]?: () => MixinConfig;
+  [LAST_GOOD_CONFIG_KEY]?: MixinConfig;
 };
 
 /** 可中止睡眠，等价 pi 自带 dist/utils/sleep.js 的行为。 */
@@ -67,6 +73,24 @@ export function calculateRetryDelayMs(attempt: number, config: MixinConfig): num
   return Math.min(raw, config.maxDelayMs);
 }
 
+/**
+ * 读取当前配置，失败即降级。
+ *
+ * 配置源通常持有扩展工厂闭包里的 pi 引用，会话替换或 reload 之后调用它会抛
+ * "extension ctx is stale ..."。本补丁运行在 pi 的 run 路径里（agent-session 的
+ * 重试准备阶段），那里的异常会中止当轮回复并在 TUI 里显示为一行错误，重试逻辑随之失效。
+ * 因此这里读取失败时退回上一次成功的配置，异常一律外抛不出去。
+ */
+function readConfig(patched: PatchedPrepareRetry): MixinConfig {
+  try {
+    const config = patched[CONFIG_PROVIDER_KEY]?.() ?? DEFAULT_MIXIN_CONFIG;
+    patched[LAST_GOOD_CONFIG_KEY] = config;
+    return config;
+  } catch {
+    return patched[LAST_GOOD_CONFIG_KEY] ?? DEFAULT_MIXIN_CONFIG;
+  }
+}
+
 export function installPrepareRetryMixin(getConfig: () => MixinConfig): void {
   const proto = AgentSession.prototype as unknown as Record<"_prepareRetry", PatchedPrepareRetry>;
   const current = proto._prepareRetry;
@@ -80,7 +104,7 @@ export function installPrepareRetryMixin(getConfig: () => MixinConfig): void {
   const originalPrepareRetry = current;
 
   const patched = async function (this: PrepareRetryHost, message: unknown): Promise<boolean> {
-    const config = patched[CONFIG_PROVIDER_KEY]?.() ?? DEFAULT_MIXIN_CONFIG;
+    const config = readConfig(patched);
     if (!config.enabled) {
       return originalPrepareRetry.call(this, message);
     }
