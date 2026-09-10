@@ -1,6 +1,6 @@
 {
   "name": "not-enough-retry",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "Make Pi's built-in retry catch every non-permanent provider error.",
   "type": "module",
   "license": "MIT",
