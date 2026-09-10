@@ -64,11 +64,13 @@ pi install git:github.com/EnderLiquid/not-enough-retry
 
 启动时附加 `--ner-no-mixin` 可临时禁用 mixin，无需改动配置文件，适合 pi 升级后应急。
 
-settings.json 损坏或字段非法时，插件回退默认配置并在会话开始时发出 warning 通知。
+`not-enough-retry.mixin` 配置段缺失或字段非法时，插件使用默认 mixin 配置。
 
 ## 兼容性
 
 需要 Pi 0.84 或更高版本。mixin 补丁在 0.84.x 上验证；其他版本若内部结构变化，补丁会经 sanity check 安全地自动失效。
+
+从 0.2.0 直接升级到 0.3.0 或更高版本时，需要完整重启一次 Pi；仅执行 `/reload` 无法替换旧的 prototype 补丁。0.3.0 已引入 revision 注册表，此后的 mixin 升级只需执行 `/reload`。
 
 ## 致谢
 

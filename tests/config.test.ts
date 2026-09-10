@@ -1,11 +1,9 @@
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
 import { test } from "node:test";
+import { SettingsManager } from "@earendil-works/pi-coding-agent";
 import {
   DEFAULT_MIXIN_CONFIG,
-  loadMixinConfig,
+  resolveMixinConfig,
   sanitizeMixinConfig,
 } from "../extensions/shared/config.ts";
 
@@ -32,45 +30,57 @@ test("sanitize：部分缺失时按字段回退", () => {
   assert.equal(config.maxDelayMs, DEFAULT_MIXIN_CONFIG.maxDelayMs);
 });
 
-test("sanitize：enabled 仅在显式 false 时关闭", () => {
+test("sanitize：enabled 必须是布尔值", () => {
   assert.equal(sanitizeMixinConfig({}).enabled, true);
   assert.equal(sanitizeMixinConfig({ enabled: true }).enabled, true);
   assert.equal(sanitizeMixinConfig({ enabled: false }).enabled, false);
+  assert.throws(
+    () => sanitizeMixinConfig({ enabled: "false" as unknown as boolean, maxRetries: 3 }),
+    /boolean/,
+  );
 });
 
-test("loadMixinConfig：读取项目级 not-enough-retry.mixin 段", () => {
-  const tmp = mkdtempSync(join(tmpdir(), "ner-config-"));
-  const piDir = join(tmp, ".pi");
-  mkdirSync(piDir, { recursive: true });
-  writeFileSync(
-    join(piDir, "settings.json"),
-    JSON.stringify({
-      "not-enough-retry": { mixin: { maxRetries: 7, baseDelayMs: 500 } },
-    }),
+test("resolveMixinConfig：读取 Pi SettingsManager 的当前合并快照", () => {
+  const manager = SettingsManager.inMemory(
+    {
+      "not-enough-retry": {
+        mixin: { maxRetries: 9, baseDelayMs: 250 },
+      },
+    } as unknown as Parameters<typeof SettingsManager.inMemory>[0],
   );
-  const config = loadMixinConfig(tmp);
+  const snapshot = (manager as unknown as { settings: unknown }).settings as Parameters<
+    typeof resolveMixinConfig
+  >[0];
+  const config = resolveMixinConfig(snapshot);
+  assert.equal(config.maxRetries, 9);
+  assert.equal(config.baseDelayMs, 250);
+});
+
+test("resolveMixinConfig：读取普通 merged settings 快照", () => {
+  const config = resolveMixinConfig({
+    "not-enough-retry": {
+      mixin: { maxRetries: 7, baseDelayMs: 500 },
+    },
+  });
   assert.equal(config.maxRetries, 7);
   assert.equal(config.baseDelayMs, 500);
   assert.equal(config.maxDelayMs, DEFAULT_MIXIN_CONFIG.maxDelayMs);
 });
 
-test("loadMixinConfig：settings 损坏时抛出", () => {
-  const tmp = mkdtempSync(join(tmpdir(), "ner-config-"));
-  const piDir = join(tmp, ".pi");
-  mkdirSync(piDir, { recursive: true });
-  writeFileSync(join(piDir, "settings.json"), "{ not json");
-  assert.throws(() => loadMixinConfig(tmp), /failed to parse/);
+test("resolveMixinConfig：配置段缺失或形状错误时使用默认值", () => {
+  assert.deepEqual(resolveMixinConfig({}), DEFAULT_MIXIN_CONFIG);
+  assert.deepEqual(
+    resolveMixinConfig({ "not-enough-retry": { mixin: "invalid" } }),
+    DEFAULT_MIXIN_CONFIG,
+  );
 });
 
-test("loadMixinConfig：非法字段值抛出", () => {
-  const tmp = mkdtempSync(join(tmpdir(), "ner-config-"));
-  const piDir = join(tmp, ".pi");
-  mkdirSync(piDir, { recursive: true });
-  writeFileSync(
-    join(piDir, "settings.json"),
-    JSON.stringify({
-      "not-enough-retry": { mixin: { maxRetries: "many" } },
-    }),
-  );
-  assert.throws(() => loadMixinConfig(tmp), /non-negative/);
+test("resolveMixinConfig：任一字段非法时回退完整默认配置", () => {
+  const config = resolveMixinConfig({
+    "not-enough-retry": {
+      mixin: { enabled: "yes", maxRetries: 3, baseDelayMs: 0 },
+    },
+  });
+  assert.deepEqual(config, DEFAULT_MIXIN_CONFIG);
+  assert.notEqual(config, DEFAULT_MIXIN_CONFIG);
 });

@@ -1,10 +1,10 @@
 /**
- * mixin 配置：从 pi settings.json 的自定义段读取。
+ * mixin 配置：从当前 AgentSession 已合并的 settings 快照中读取。
  *
  * pi 的 settings 解析无 schema 校验，未知键原样保留、不告警不丢弃，
- * 因此插件可以安全地占用 "not-enough-retry" 段。
+ * 因此插件可以安全地占用 "not-enough-retry" 段。读取当前 session 的
+ * SettingsManager 可避免额外 manager 与跨 session 的配置单例。
  */
-import { getAgentDir, SettingsManager } from "@earendil-works/pi-coding-agent";
 
 export interface MixinConfig {
   /** mixin 总开关。关闭时完全交还 pi 原生 _prepareRetry。 */
@@ -27,13 +27,19 @@ export const DEFAULT_MIXIN_CONFIG: MixinConfig = {
 /** 应急关闭 flag：启动时加 --ner-no-mixin 即可禁用 mixin，无需改配置文件。 */
 export const NO_MIXIN_FLAG = "ner-no-mixin";
 
-type MixinSection = { mixin?: Partial<MixinConfig> };
+type MixinSection = { mixin?: unknown };
+
+type SettingsSnapshot = Record<string, unknown>;
+
+function asRecord(value: unknown): Record<string, unknown> | undefined {
+  if (value && typeof value === "object" && !Array.isArray(value)) {
+    return value as Record<string, unknown>;
+  }
+  return undefined;
+}
 
 function asMixinSection(value: unknown): MixinSection {
-  if (value && typeof value === "object" && !Array.isArray(value)) {
-    return value as MixinSection;
-  }
-  return {};
+  return asRecord(value) ?? {};
 }
 
 function isNonNegativeFinite(value: unknown): value is number {
@@ -47,8 +53,12 @@ export function sanitizeMixinConfig(raw: Partial<MixinConfig>): MixinConfig {
     if (isNonNegativeFinite(value)) return Math.trunc(value);
     throw new Error(`not-enough-retry.mixin.${key} should be a non-negative number`);
   };
+  const enabled = merged.enabled;
+  if (typeof enabled !== "boolean") {
+    throw new Error("not-enough-retry.mixin.enabled should be a boolean");
+  }
   return {
-    enabled: merged.enabled !== false,
+    enabled,
     maxRetries: numeric("maxRetries"),
     baseDelayMs: numeric("baseDelayMs"),
     maxDelayMs: numeric("maxDelayMs"),
@@ -56,23 +66,17 @@ export function sanitizeMixinConfig(raw: Partial<MixinConfig>): MixinConfig {
 }
 
 /**
- * 读取 pi settings 中 "not-enough-retry.mixin" 段（全局与项目级浅合并）。
- * 配置损坏或字段非法时直接抛出，由调用方捕获后回退默认并通知。
+ * 从 Pi 已合并的 session settings 中解析插件段。
+ *
+ * 配置段缺失或字段非法时使用完整默认值。这里不读取文件、不消费
+ * SettingsManager 的错误队列，也不依赖 extension 生命周期。
  */
-export function loadMixinConfig(cwd: string): MixinConfig {
-  const manager = SettingsManager.create(cwd, getAgentDir(), { projectTrusted: true });
-  const settingsErrors = manager.drainErrors();
-  if (settingsErrors.length > 0) {
-    const first = settingsErrors[0];
-    throw new Error(
-      `${first.scope === "global" ? "global" : "project"} settings.json failed to parse: ${first.error.message}`,
-    );
+export function resolveMixinConfig(settings: SettingsSnapshot): MixinConfig {
+  const section = asMixinSection(settings["not-enough-retry"]);
+  const raw = asRecord(section.mixin) ?? {};
+  try {
+    return sanitizeMixinConfig(raw as Partial<MixinConfig>);
+  } catch {
+    return { ...DEFAULT_MIXIN_CONFIG };
   }
-  const globalSection = asMixinSection(
-    (manager.getGlobalSettings() as Record<string, unknown>)["not-enough-retry"],
-  );
-  const projectSection = asMixinSection(
-    (manager.getProjectSettings() as Record<string, unknown>)["not-enough-retry"],
-  );
-  return sanitizeMixinConfig({ ...globalSection.mixin, ...projectSection.mixin });
 }

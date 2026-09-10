@@ -1,25 +1,20 @@
 /**
  * 冒烟测试：验证扩展入口对真实 AgentSession.prototype 的补丁行为。
  *
- * 说明：
- * - 补丁打在项目 node_modules 里的 AgentSession 上（pi 运行时经 alias 指向宿主，
- *   同一类对象），进程内无副作用。
- * - 通过临时项目 settings 把 baseDelayMs 置 0，避免真实等待。
- * - 临时目录不清理，留在系统 temp（由系统定期回收）。
+ * 补丁打在项目 node_modules 里的 AgentSession 上；测试 host 只实现 mixin
+ * 实际依赖的运行时字段，并用 baseDelayMs=0 避免真实等待。
  */
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
 import { test } from "node:test";
 import { AgentSession, type ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { NO_MIXIN_FLAG } from "../extensions/shared/config.ts";
+import { DEFAULT_MIXIN_CONFIG, NO_MIXIN_FLAG } from "../extensions/shared/config.ts";
 
 type Handler = (event: any, ctx: any) => any;
 
-function createFakePi() {
+function createFakePi(options: { staleGetFlag?: boolean } = {}) {
   const handlers = new Map<string, Handler[]>();
   const flags = new Map<string, unknown>();
+  let getFlagCalls = 0;
   const api: {
     on: (event: string, handler: Handler) => void;
     registerFlag: (name: string, options: unknown) => void;
@@ -30,83 +25,172 @@ function createFakePi() {
       list.push(handler);
       handlers.set(event, list);
     },
-    registerFlag(_name) {
-      // 只注册；getFlag 默认 undefined，由测试显式设置 flag 值。
+    registerFlag() {
+      // 只注册；运行时 flag 由当前 AgentSession.extensionRunner 提供。
     },
     getFlag(name) {
+      getFlagCalls++;
+      if (options.staleGetFlag) {
+        throw new Error("This extension ctx is stale after session replacement or reload.");
+      }
       return flags.get(name);
     },
   };
-  return { handlers, flags, api };
+  return { handlers, flags, api, getFlagCalls: () => getFlagCalls };
 }
 
-function createHost() {
-  const events: Array<Record<string, unknown>> = [];
+function mixinSettings(mixin: Record<string, unknown> = {}) {
   return {
-    events,
-    host: {
-      _retryAttempt: 0,
-      _emit: (event: Record<string, unknown>) => {
-        events.push(event);
+    "not-enough-retry": {
+      mixin: {
+        maxRetries: 2,
+        baseDelayMs: 0,
+        maxDelayMs: 30000,
+        ...mixin,
       },
-      agent: {
-        state: {
-          messages: [
-            { role: "user" },
-            { role: "assistant", stopReason: "error", errorMessage: "weird upstream error" },
-          ],
-        },
-      },
-      settingsManager: { getRetrySettings: () => ({ enabled: true }) },
     },
   };
 }
 
+type HostOptions = {
+  settings?: unknown;
+  flags?: Map<string, unknown>;
+  retryEnabled?: boolean;
+  nativeMaxRetries?: number;
+  retryAttempt?: number;
+};
+
+function createHost(options: HostOptions = {}) {
+  const events: Array<Record<string, unknown>> = [];
+  let flagReads = 0;
+  const flags = options.flags ?? new Map<string, unknown>();
+  const host = {
+    _retryAttempt: options.retryAttempt ?? 0,
+    _emit: (event: Record<string, unknown>) => {
+      events.push(event);
+    },
+    agent: {
+      state: {
+        messages: [
+          { role: "user" },
+          { role: "assistant", stopReason: "error", errorMessage: "weird upstream error" },
+        ],
+      },
+    },
+    settingsManager: {
+      settings: options.settings ?? mixinSettings(),
+      // 额外字段供真实原生 _prepareRetry 在降级测试中使用。
+      getRetrySettings: () => ({
+        enabled: options.retryEnabled ?? true,
+        maxRetries: options.nativeMaxRetries ?? 0,
+        baseDelayMs: 0,
+      }),
+    },
+    extensionRunner: {
+      getFlagValues: () => {
+        flagReads++;
+        return new Map(flags);
+      },
+    },
+  };
+  return { events, host, flagReads: () => flagReads };
+}
+
+function getPrepareRetry(): (message: unknown) => Promise<boolean> {
+  return (
+    AgentSession.prototype as unknown as Record<
+      "_prepareRetry",
+      (message: unknown) => Promise<boolean>
+    >
+  )._prepareRetry;
+}
+
 test("mixin 补丁：退避封顶、摘除 error、次数上限、事件形状", async () => {
-  const tmp = mkdtempSync(join(tmpdir(), "ner-smoke-"));
-  const piDir = join(tmp, ".pi");
-  mkdirSync(piDir, { recursive: true });
-  writeFileSync(
-    join(piDir, "settings.json"),
-    JSON.stringify({
-      "not-enough-retry": { mixin: { maxRetries: 2, baseDelayMs: 0, maxDelayMs: 30000 } },
-    }),
-  );
+  const { default: notEnoughRetry } = await import("../extensions/not-enough-retry.ts");
+  const { api } = createFakePi();
+  notEnoughRetry(api as unknown as ExtensionAPI);
 
-  const originalCwd = process.cwd();
-  try {
-    process.chdir(tmp);
-    const { default: notEnoughRetry } = await import("../extensions/not-enough-retry.ts");
-    const { api } = createFakePi();
-    notEnoughRetry(api as unknown as ExtensionAPI);
+  const prepareRetry = getPrepareRetry();
+  const { events, host } = createHost();
 
-    const prepareRetry = (
-      AgentSession.prototype as unknown as Record<"_prepareRetry", (message: unknown) => Promise<boolean>>
-    )._prepareRetry;
-    const { events, host } = createHost();
+  assert.equal(await prepareRetry.call(host, { errorMessage: "weird" }), true);
+  assert.equal(host._retryAttempt, 1);
+  assert.equal(host.agent.state.messages.length, 1);
+  assert.deepEqual(events[0], {
+    type: "auto_retry_start",
+    attempt: 1,
+    maxAttempts: 2,
+    delayMs: 0,
+    errorMessage: "weird",
+  });
 
-    // 第 1 次：delayMs=0（baseDelayMs 0），摘除 error 消息
-    assert.equal(await prepareRetry.call(host, { errorMessage: "weird" }), true);
-    assert.equal(host._retryAttempt, 1);
-    assert.equal(host.agent.state.messages.length, 1);
-    assert.deepEqual(events[0], {
-      type: "auto_retry_start",
-      attempt: 1,
-      maxAttempts: 2,
-      delayMs: 0,
-      errorMessage: "weird",
-    });
+  assert.equal(await prepareRetry.call(host, { errorMessage: "weird" }), true);
+  assert.equal(host._retryAttempt, 2);
 
-    // 第 2 次：上限内
-    assert.equal(await prepareRetry.call(host, { errorMessage: "weird" }), true);
-    assert.equal(host._retryAttempt, 2);
+  assert.equal(await prepareRetry.call(host, { errorMessage: "weird" }), false);
+  assert.equal(host._retryAttempt, 2);
+});
 
-    // 第 3 次：超过 maxRetries，回退计数并返回 false（原生语义）
-    assert.equal(await prepareRetry.call(host, { errorMessage: "weird" }), false);
-    assert.equal(host._retryAttempt, 2);
-  } finally {
-    process.chdir(originalCwd);
-  }
+test("mixin 补丁：配置与 flag 按 AgentSession 隔离", async () => {
+  const { default: notEnoughRetry } = await import("../extensions/not-enough-retry.ts");
+  const { api } = createFakePi();
+  notEnoughRetry(api as unknown as ExtensionAPI);
+  const prepareRetry = getPrepareRetry();
+
+  const disabledFlags = new Map<string, unknown>([[NO_MIXIN_FLAG, true]]);
+  const first = createHost({
+    settings: mixinSettings({ maxRetries: 1 }),
+    flags: disabledFlags,
+  });
+  const second = createHost({ settings: mixinSettings({ maxRetries: 2 }) });
+
+  // 第一个 session 由自己的 flag 关闭 mixin，原生 maxRetries=0 直接返回 false。
+  assert.equal(await prepareRetry.call(first.host, { errorMessage: "weird" }), false);
+  assert.equal(first.events.length, 0);
+
+  // 第二个 session 不受第一个 session 的 flag/config 影响。
+  assert.equal(await prepareRetry.call(second.host, { errorMessage: "weird" }), true);
+  assert.equal(await prepareRetry.call(second.host, { errorMessage: "weird" }), true);
+  assert.equal(await prepareRetry.call(second.host, { errorMessage: "weird" }), false);
+  assert.equal(second.events.length, 2);
+  assert.equal(second.events[0]?.maxAttempts, 2);
+});
+
+test("mixin 补丁：run path 不调用 extension factory 捕获的 pi API", async () => {
+  const { default: notEnoughRetry } = await import("../extensions/not-enough-retry.ts");
+  const fake = createFakePi({ staleGetFlag: true });
+  assert.doesNotThrow(() => notEnoughRetry(fake.api as unknown as ExtensionAPI));
+
+  const { host } = createHost({ settings: mixinSettings({ maxRetries: 1 }) });
+  assert.equal(await getPrepareRetry().call(host, { errorMessage: "weird" }), true);
+  assert.equal(fake.getFlagCalls(), 0);
+});
+
+test("mixin 补丁：非法插件配置无状态回退完整默认值", async () => {
+  const { default: notEnoughRetry } = await import("../extensions/not-enough-retry.ts");
+  const { api } = createFakePi();
+  notEnoughRetry(api as unknown as ExtensionAPI);
+
+  const { host } = createHost({
+    settings: mixinSettings({ maxRetries: "many", baseDelayMs: 0 }),
+    retryAttempt: DEFAULT_MIXIN_CONFIG.maxRetries,
+    nativeMaxRetries: 99,
+  });
+  // 默认 maxRetries=16 已到上限；若错误地走原生路径，这里会继续重试。
+  assert.equal(await getPrepareRetry().call(host, { errorMessage: "weird" }), false);
+  assert.equal(host._retryAttempt, DEFAULT_MIXIN_CONFIG.maxRetries);
+});
+
+test("mixin 补丁：宿主私有结构不兼容时交还原生实现", async () => {
+  const { default: notEnoughRetry } = await import("../extensions/not-enough-retry.ts");
+  const { api } = createFakePi();
+  notEnoughRetry(api as unknown as ExtensionAPI);
+
+  const current = createHost();
+  (current.host.settingsManager as { settings?: unknown }).settings = undefined;
+  assert.equal(await getPrepareRetry().call(current.host, { errorMessage: "weird" }), false);
+  assert.equal(current.events.length, 0);
+  assert.equal(current.flagReads(), 0);
 });
 
 test("message_end 处理器：未知错误追加 hint，返回替换消息", async () => {
@@ -162,73 +246,25 @@ test("message_end 处理器：active signal 已取消时不追加 hint", async (
   assert.equal(event.message.errorMessage, "an unknown local cancellation failure");
 });
 
-test("session_start：配置损坏时通知并回退默认", async () => {
-  const tmp = mkdtempSync(join(tmpdir(), "ner-notify-"));
-  const piDir = join(tmp, ".pi");
-  mkdirSync(piDir, { recursive: true });
-  writeFileSync(join(piDir, "settings.json"), "{ not json");
-
-  const originalCwd = process.cwd();
-  try {
-    process.chdir(tmp);
-    const { default: notEnoughRetry } = await import("../extensions/not-enough-retry.ts");
-    const { handlers, api } = createFakePi();
-    notEnoughRetry(api as unknown as ExtensionAPI);
-
-    const notifications: Array<{ message: string; level: string }> = [];
-    const ctx = {
-      cwd: tmp,
-      hasUI: true,
-      ui: { notify: (message: string, level: string) => notifications.push({ message, level }) },
-    };
-    const handler = handlers.get("session_start")![0]!;
-
-    await handler({}, ctx);
-    assert.equal(notifications.length, 1);
-    assert.equal(notifications[0].level, "warning");
-    assert.ok(notifications[0].message.includes("failed to parse"));
-
-    // 修复配置后不再通知
-    writeFileSync(
-      join(piDir, "settings.json"),
-      JSON.stringify({ "not-enough-retry": { mixin: { maxRetries: 3 } } }),
-    );
-    await handler({}, ctx);
-    assert.equal(notifications.length, 1);
-  } finally {
-    process.chdir(originalCwd);
-  }
-});
-
-test("重复执行工厂不叠加补丁层（模拟 reload 后重新注册）", async () => {
+test("重复执行工厂不叠加同 revision 补丁层", async () => {
   const { default: notEnoughRetry } = await import("../extensions/not-enough-retry.ts");
-  const proto = AgentSession.prototype as unknown as Record<
-    "_prepareRetry",
-    (message: unknown) => Promise<boolean>
-  >;
+  const { api: firstApi } = createFakePi();
+  notEnoughRetry(firstApi as unknown as ExtensionAPI);
+  const afterFirst = getPrepareRetry();
 
-  const { api: api1 } = createFakePi();
-  notEnoughRetry(api1 as unknown as ExtensionAPI);
-  const afterFirst = proto._prepareRetry;
-
-  const { api: api2 } = createFakePi();
-  notEnoughRetry(api2 as unknown as ExtensionAPI);
-  assert.equal(proto._prepareRetry, afterFirst);
+  const { api: secondApi } = createFakePi();
+  notEnoughRetry(secondApi as unknown as ExtensionAPI);
+  assert.equal(getPrepareRetry(), afterFirst);
 });
 
 test("mixin 补丁：CLI flag 应急关闭时交还原生实现", async () => {
   const { default: notEnoughRetry } = await import("../extensions/not-enough-retry.ts");
-  const { flags, api } = createFakePi();
-  flags.set(NO_MIXIN_FLAG, true);
+  const { api } = createFakePi();
   notEnoughRetry(api as unknown as ExtensionAPI);
 
-  const prepareRetry = (
-    AgentSession.prototype as unknown as Record<"_prepareRetry", (message: unknown) => Promise<boolean>>
-  )._prepareRetry;
-  const { events, host } = createHost();
-  // 原生实现在 retry.enabled=false 时立即返回 false 且不发事件
-  host.settingsManager = { getRetrySettings: () => ({ enabled: false }) };
-  assert.equal(await prepareRetry.call(host, { errorMessage: "weird" }), false);
+  const flags = new Map<string, unknown>([[NO_MIXIN_FLAG, true]]);
+  const { events, host } = createHost({ flags });
+  assert.equal(await getPrepareRetry().call(host, { errorMessage: "weird" }), false);
   assert.equal(events.length, 0);
   assert.equal(host._retryAttempt, 0);
 });

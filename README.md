@@ -64,11 +64,13 @@ Works out of the box. Optional settings go in pi's `settings.json`:
 
 Pass `--ner-no-mixin` at startup to disable the mixin temporarily without editing any config — handy right after a pi upgrade.
 
-If `settings.json` is corrupted or contains invalid values, the plugin falls back to defaults and shows a warning notification at session start.
+If the `not-enough-retry.mixin` section is missing or contains invalid values, the plugin uses the default mixin settings.
 
 ## Compatibility
 
 Requires Pi 0.84 or later. The mixin patch is verified on 0.84.x; if internals change in other versions, the sanity check safely disables the patch.
+
+When upgrading directly from 0.2.0 to 0.3.0 or later, fully restart Pi once; `/reload` cannot replace the legacy prototype patch. Version 0.3.0 introduced the revision registry, so later mixin upgrades only require `/reload`.
 
 ## Acknowledgements
 
