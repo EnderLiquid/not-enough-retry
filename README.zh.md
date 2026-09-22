@@ -6,13 +6,13 @@ pi 内置的 retry 按白名单匹配错误文本：overloaded、rate limit、co
 
 ## 概要
 
-`not-enough-retry` 用两处小改造让 pi 内置的 retry 接管所有非永久性错误：给错误信息打上能触发原生 retry 的标记；用可选的 mixin 补丁为原生退避补上封顶。
+`not-enough-retry` 用一处小改造让 pi 内置的 retry 接管所有非永久性错误：给错误信息打上能触发原生 retry 的标记。
 
 ## 两位先驱
 
 社区里已经有两个热门的 retry 插件，各自解决了问题的一半。
 
-`@narumitw/pi-retry` 的思路是把错误翻译成 pi 认识的样子：在 `message_end` 时给特定错误文本追加一句 `provider returned error`，内置判定器就接盘了。侵入性极小、事件语义完全正确，但它只认识几种错误，也没有解决原生 retry 退避的问题。
+`@narumitw/pi-retry` 的思路是把错误翻译成 pi 认识的样子：在 `message_end` 时给特定错误文本追加一句 `provider returned error`，内置判定器就接盘了。侵入性极小、事件语义完全正确，但它只认识几种错误。
 
 `@monotykamary/pi-retry` 选择自己实现整个 retry 循环：黑名单之外的一切错误无限重试，效果立竿见影。代价是每次重试都是一次完整的隐藏 turn——`agent_settled` 事件风暴反复触发完成通知类插件，每条重试指令都会作为用户消息进入模型上下文。
 
@@ -21,10 +21,6 @@ pi 内置的 retry 按白名单匹配错误文本：overloaded、rate limit、co
 ## 工作原理
 
 `message_end` 时检查 assistant 错误消息：命中黑名单（鉴权失败、模型不存在等，共 9 条）则放行，其余全部追加 `provider returned error` 标记。pi 的原生 retry 随即接管：重试次数、退避、TUI 状态、中断处理全部是原生行为。上下文零污染，不会多出任何消息记录，完成通知类插件也不会误报。
-
-原生退避没有封顶，重试次数调大后单次等待时长会指数爆炸，导致会话冻结。（例如，默认第 12 次重试前要等待约 68 分钟）
-
-可选的 mixin 补丁只替换退避来源：指数退避封顶到 `maxDelayMs`，次数上限独立配置，其余行为与原生逐字一致。补丁是温和的——配置关闭、启动参数关闭、或 pi 升级导致内部字段变化时，自动交还原生实现，最坏情况只是退回 pi 的默认行为。
 
 ## 安装
 
@@ -40,37 +36,16 @@ pi install npm:not-enough-retry
 pi install git:github.com/EnderLiquid/not-enough-retry
 ```
 
-## 配置
+## 版本要求
 
-默认开箱即用。在 pi 的 `settings.json` 中可配置：
+需要 Pi 0.87.0 或更高版本。
 
-```json
-{
-  "not-enough-retry": {
-    "mixin": {
-      "enabled": true,
-      "maxRetries": 16,
-      "baseDelayMs": 2000,
-      "maxDelayMs": 30000
-    }
-  }
-}
-```
+0.3.x 及以前的版本附带一个可选的 mixin 补丁，用于给原生退避补上封顶并提供独立的重试次数上限。0.4.0 移除了它，因为它的存在理由已经消失：Pi 0.86.0 已自行修复退避无封顶的问题（`retry.maxAgentDelayMs`，默认 60 秒，见 pi issue [#8826](https://github.com/earendil-works/pi/issues/8826)）；0.87.0 起失败的尝试改由 canonical 的 session manager 持久省略，旧补丁依赖的消息数组摘除手法也随之失效。
 
-- `enabled`：mixin 总开关，默认 `true`。关闭时完全交还 pi 原生 `_prepareRetry`；
-- `maxRetries`：连续失败重试上限，替代 pi 的 `retry.maxRetries`，默认 16，仅启用 mixin 时生效；
-- `baseDelayMs`：首次重试退避（毫秒），之后每次翻倍但不超过退避封顶，默认 2000，仅启用 mixin 时生效；
-- `maxDelayMs`：退避封顶（毫秒），默认 30000，仅启用 mixin 时生效。
+从 0.3.x 或更早版本升级时请注意：
 
-启动时附加 `--ner-no-mixin` 可临时禁用 mixin，无需改动配置文件，适合 pi 升级后应急。
-
-`not-enough-retry.mixin` 配置段缺失或字段非法时，插件使用默认 mixin 配置。
-
-## 兼容性
-
-需要 Pi 0.84 或更高版本。mixin 补丁在 0.84.x 上验证；其他版本若内部结构变化，补丁会经 sanity check 安全地自动失效。
-
-从 0.2.0 直接升级到 0.3.0 或更高版本时，需要完整重启一次 Pi；仅执行 `/reload` 无法替换旧的 prototype 补丁。0.3.0 已引入 revision 注册表，此后的 mixin 升级只需执行 `/reload`。
+- 从启动脚本中移除 `--ner-no-mixin`。pi 会拒绝未注册的扩展 flag，残留会导致启动失败并报 `Unknown option: --ner-no-mixin`。
+- `settings.json` 中的 `not-enough-retry.mixin` 配置段将不再生效，可直接删除。
 
 ## 致谢
 

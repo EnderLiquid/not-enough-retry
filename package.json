@@ -35,16 +35,16 @@
     ]
   },
   "peerDependencies": {
-    "@earendil-works/pi-coding-agent": ">=0.84.0"
+    "@earendil-works/pi-coding-agent": ">=0.87.0"
   },
   "scripts": {
     "test": "tsx --test tests/*.test.ts",
     "test:types": "tsc --noEmit"
   },
   "devDependencies": {
-    "@earendil-works/pi-agent-core": "^0.84.1",
-    "@earendil-works/pi-ai": "^0.84.1",
-    "@earendil-works/pi-coding-agent": "0.84.1",
+    "@earendil-works/pi-agent-core": "^0.87.0",
+    "@earendil-works/pi-ai": "^0.87.0",
+    "@earendil-works/pi-coding-agent": "0.87.0",
     "@types/node": "^24.10.0",
     "tsx": "^4.23.10",
     "typescript": "^5.9.3"

@@ -6,13 +6,13 @@ pi's built-in retry matches error text against a whitelist: overloaded, rate lim
 
 ## Summary
 
-`not-enough-retry` makes pi's built-in retry take over all non-permanent errors with two small changes: it tags error messages so the native retry recognizes them, and it adds an optional mixin patch that caps the native backoff.
+`not-enough-retry` makes pi's built-in retry take over all non-permanent errors with one small change: it tags error messages so the native retry recognizes them.
 
 ## Two predecessors
 
 Two popular retry plugins already exist in the community, each solving half of the problem.
 
-`@narumitw/pi-retry` translates errors into something pi understands: on `message_end` it appends the phrase `provider returned error` to certain error texts, and pi's built-in matcher takes over. Minimally invasive and semantically correct — but it only recognizes a handful of error patterns, and it does nothing about the uncapped native backoff.
+`@narumitw/pi-retry` translates errors into something pi understands: on `message_end` it appends the phrase `provider returned error` to certain error texts, and pi's built-in matcher takes over. Minimally invasive and semantically correct — but it only recognizes a handful of error patterns.
 
 `@monotykamary/pi-retry` implements its own retry loop instead: everything outside a blacklist is retried indefinitely, and it works remarkably well. The price is that every retry is a full hidden turn — an `agent_settled` storm keeps firing completion-notification plugins, and every retry instruction enters the model context as a user message.
 
@@ -21,10 +21,6 @@ Two popular retry plugins already exist in the community, each solving half of t
 ## How it works
 
 On `message_end`, assistant error messages are checked against a blacklist (authentication failures, unknown models — 9 patterns in total). Blacklisted errors pass through untouched; everything else gets a `provider returned error` tag. pi's native retry then takes over completely: attempt limits, backoff, TUI status, and abort handling are all stock behavior. Zero context pollution, no extra message entries, and completion-notification plugins are none the wiser.
-
-The native backoff has no cap, so a large retry limit means exponentially exploding wait times that freeze the session. (For example, the 12th retry waits about 68 minutes by default.)
-
-The optional mixin patch replaces only the backoff source: exponential backoff capped at `maxDelayMs`, with an independent attempt limit. Everything else behaves exactly like the original. The patch is gentle — if you disable it in config, pass a CLI flag, or pi's internals change after an upgrade, it hands control back to the native implementation. The worst case is simply pi's default behavior.
 
 ## Install
 
@@ -40,37 +36,16 @@ pi install npm:not-enough-retry
 pi install git:github.com/EnderLiquid/not-enough-retry
 ```
 
-## Configuration
+## Requirements
 
-Works out of the box. Optional settings go in pi's `settings.json`:
+Requires Pi 0.87.0 or later.
 
-```json
-{
-  "not-enough-retry": {
-    "mixin": {
-      "enabled": true,
-      "maxRetries": 16,
-      "baseDelayMs": 2000,
-      "maxDelayMs": 30000
-    }
-  }
-}
-```
+Versions up to 0.3.x shipped an optional mixin patch that capped the native backoff and carried its own retry limit. It is gone in 0.4.0 because the reason for it disappeared: Pi 0.86.0 capped agent-level retry backoff on its own (`retry.maxAgentDelayMs`, 60s by default, see pi issue [#8826](https://github.com/earendil-works/pi/issues/8826)), and since 0.87.0 the failed attempt is durably omitted from model context through the canonical session manager instead of the message-array surgery the patch relied on.
 
-- `enabled`: mixin switch, defaults to `true`. When off, pi's native `_prepareRetry` runs untouched.
-- `maxRetries`: consecutive-failure retry limit, replacing pi's `retry.maxRetries`. Defaults to 16, only applies when the mixin is on.
-- `baseDelayMs`: initial retry backoff in milliseconds, doubling each attempt but never exceeding the cap. Defaults to 2000, only applies when the mixin is on.
-- `maxDelayMs`: backoff cap in milliseconds. Defaults to 30000, only applies when the mixin is on.
+When upgrading from 0.3.x or earlier:
 
-Pass `--ner-no-mixin` at startup to disable the mixin temporarily without editing any config — handy right after a pi upgrade.
-
-If the `not-enough-retry.mixin` section is missing or contains invalid values, the plugin uses the default mixin settings.
-
-## Compatibility
-
-Requires Pi 0.84 or later. The mixin patch is verified on 0.84.x; if internals change in other versions, the sanity check safely disables the patch.
-
-When upgrading directly from 0.2.0 to 0.3.0 or later, fully restart Pi once; `/reload` cannot replace the legacy prototype patch. Version 0.3.0 introduced the revision registry, so later mixin upgrades only require `/reload`.
+- Remove `--ner-no-mixin` from your launch scripts. Pi rejects unknown extension flags and will refuse to start with `Unknown option: --ner-no-mixin`.
+- The `not-enough-retry.mixin` section in `settings.json` becomes inert and can be deleted.
 
 ## Acknowledgements
 
